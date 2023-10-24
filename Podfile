@@ -1,6 +1,6 @@
 # Uncomment this line to define a global platform for your project
 
-platform :ios, '11.0'
+platform :ios, '16.0'
 
 target 'Overland' do
 	pod 'AFNetworking',		'3.2.1'
