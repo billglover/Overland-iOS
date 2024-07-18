@@ -4,21 +4,25 @@
 //
 //  Created by Aaron Parecki on 9/17/15.
 //  Copyright © 2015 Esri. All rights reserved.
+//  Copyright © 2017 Aaron Parecki. All rights reserved.
 //
 
-#import "FirstViewController.h"
+#import "TrackingViewController.h"
 #import "GLManager.h"
 
-@interface FirstViewController ()
+@interface TrackingViewController ()
 
 @property (strong, nonatomic) NSTimer *viewRefreshTimer;
 
 @end
 
-@implementation FirstViewController
+@implementation TrackingViewController
 
 NSArray *intervalMap;
 NSArray *intervalMapStrings;
+MKPointAnnotation *currentLocationAnnotation;
+BOOL dragInProgress = NO;
+BOOL mapWasDragged = NO;
 
 - (void)registerUserActivity {
     NSString *bundleIDStarter = [NSString stringWithFormat:@"%@.startTracking", [[NSBundle mainBundle] bundleIdentifier]];
@@ -40,12 +44,13 @@ NSArray *intervalMapStrings;
     intervalMap = @[@1, @5, @10, @15, @30, @60, @120, @300, @600, @1800, @-1];
     intervalMapStrings = @[@"1s", @"5s", @"10s", @"15s", @"30s", @"1m", @"2m", @"5m", @"10m", @"30m", @"off"];
     
-//    [[GLManager sharedManager] accountInfo:^(NSString *name) {
-//        self.accountInfo.text = name;
-//    }];
+    //    [[GLManager sharedManager] accountInfo:^(NSString *name) {
+    //        self.accountInfo.text = name;
+    //    }];
     
     UIImage *pattern = [UIImage imageNamed:@"topobkg"];
     self.view.backgroundColor = [UIColor colorWithPatternImage:pattern];
+    
     [self.tripView.layer setCornerRadius:6.0];
     [self.sendNowButton.layer setCornerRadius:4.0];
     [self.tripStartStopButton.layer setCornerRadius:4.0];
@@ -54,6 +59,19 @@ NSArray *intervalMapStrings;
     // adding Shortcut Code
     // get Bundle ID and add ...
     [self registerUserActivity];
+    
+    UIPanGestureRecognizer *panRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(didDragMap:)];
+    [panRecognizer setDelegate:self];
+    [self.mapView addGestureRecognizer:panRecognizer];
+    
+    CLLocation *lastLocation = [GLManager sharedManager].lastLocation;
+    self.mapView.showsUserLocation = NO;
+    self.mapView.camera.centerCoordinate = lastLocation.coordinate;
+    self.mapView.camera.altitude = [self mapAltitude];
+    self.mapView.zoomEnabled = YES;
+    
+    currentLocationAnnotation = [[MKPointAnnotation alloc] initWithCoordinate:lastLocation.coordinate];
+    [self.mapView addAnnotation:currentLocationAnnotation];
 }
 
 - (UIStatusBarStyle)preferredStatusBarStyle {
@@ -68,19 +86,24 @@ NSArray *intervalMapStrings;
 
 - (void)viewWillAppear:(BOOL)animated {
     [self sendingFinished];
-    
-    if([GLManager sharedManager].sendingInterval) {
-        self.sendIntervalSlider.value = [intervalMap indexOfObject:[GLManager sharedManager].sendingInterval];
-        [self updateSendIntervalLabel];
-    }
-    
-    [self updateTripState];
+
+    [self updateVisibleSettings];
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(newDataReceived)
                                                  name:GLNewDataNotification
                                                object:nil];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(newActivityReceived)
+                                                 name:GLNewActivityNotification
+                                               object:nil];
     
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(updateVisibleSettings)
+                                                 name:GLSettingsChangedNotification
+                                               object:nil];
+
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(sendingStarted)
                                                  name:GLSendingStartedNotification
@@ -104,12 +127,15 @@ NSArray *intervalMapStrings;
     } else {
         self.tripDistanceUnitLabel.text = @"miles";
     }
-    
-    if([GLManager sharedManager].gogoTrackerEnabled == YES) {
-        [UIApplication sharedApplication].idleTimerDisabled = YES;
-    } else {
-        [UIApplication sharedApplication].idleTimerDisabled = NO;
+}
+
+- (void)updateVisibleSettings {
+    if([GLManager sharedManager].sendingInterval) {
+        self.sendIntervalSlider.value = [intervalMap indexOfObject:[GLManager sharedManager].sendingInterval];
+        [self updateSendIntervalLabel];
     }
+    
+    [self updateTripMode];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -121,39 +147,66 @@ NSArray *intervalMapStrings;
     [UIApplication sharedApplication].idleTimerDisabled = NO;
 }
 
-- (void)viewWillUnload {
-    [self.viewRefreshTimer invalidate];
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
 - (void)dealloc {
     NSLog(@"view is deallocd");
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
+#pragma mark - MKMapViewDelegate
+
+- (MKAnnotationView * _Nullable)mapView:(MKMapView *)mapView viewForAnnotation:(nonnull id<MKAnnotation>)annotation {
+    MKAnnotationView *annotationView = [mapView dequeueReusableAnnotationViewWithIdentifier:@"current"];
+    if(annotationView == nil) {
+        annotationView = [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:@"current"];
+    } else {
+        annotationView.annotation = annotation;
+    }
+    annotationView.image = [UIImage imageNamed:@"map-dot"];
+    return annotationView;
+}
+
+#pragma mark - UIGestureRecognizerDelegate
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return YES;
+}
+
+- (void)didDragMap:(UIGestureRecognizer *)gestureRecognizer {
+//    [UIView setAnimationsEnabled:NO];
+    if(gestureRecognizer.state == UIGestureRecognizerStateBegan) {
+        dragInProgress = YES;
+        mapWasDragged = YES;
+    }
+    if(gestureRecognizer.state == UIGestureRecognizerStateEnded) {
+        dragInProgress = NO;
+    }
+}
+
 #pragma mark - Tracking Interface
 
 - (void)newDataReceived {
-    //    NSLog(@"New data received!");
-    //    NSLog(@"Location: %@", [GLManager sharedManager].lastLocation);
-    //    NSLog(@"Activity: %@", [GLManager sharedManager].lastMotion);
     self.locationAgeLabel.textColor = [UIColor whiteColor];
+    [self refreshView];
+    [self updateMap];
+}
+
+- (void)newActivityReceived {
     [self refreshView];
 }
 
 - (void)sendingStarted {
     self.sendNowButton.titleLabel.text = @"Sending...";
-    self.sendNowButton.backgroundColor = [UIColor colorWithRed:74.0/255.0 green:150.0/255.0 blue:107.0/255.0 alpha:1.0];
+    self.sendNowButton.backgroundColor = [UIColor colorNamed:@"OverlandGreenSecondary"];
     self.sendNowButton.enabled = NO;
 }
 
 - (void)sendingFinished {
     self.sendNowButton.titleLabel.text = @"Send Now";
     if([[GLManager sharedManager] apiEndpointURL] == nil) {
-        self.sendNowButton.backgroundColor = [UIColor colorWithRed:150.0/255.0 green:150.0/255.0 blue:150.0/255.0 alpha:1.0];
+        self.sendNowButton.backgroundColor = [UIColor colorNamed:@"OverlandGreenSecondary"];
         self.sendNowButton.enabled = NO;
     } else {
-        self.sendNowButton.backgroundColor = [UIColor colorWithRed:106.0/255.0 green:212.0/255.0 blue:150.0/255.0 alpha:1.0];
+        self.sendNowButton.backgroundColor = [UIColor colorNamed:@"OverlandGreen"];
         self.sendNowButton.enabled = YES;
     }
 }
@@ -164,6 +217,52 @@ NSArray *intervalMapStrings;
     } else {
         return @"MPH";
     }
+}
+
+- (void)updateMap {
+    CLLocation *location = [GLManager sharedManager].lastLocation;
+
+    // Determine if the current location too close to the edge of the map
+    MKMapPoint point = MKMapPointForCoordinate(location.coordinate);
+    UIEdgeInsets insets = UIEdgeInsetsMake(-50, -50, -50, -50);
+    MKMapRect smallerRect = [self.mapView mapRectThatFits:self.mapView.visibleMapRect edgePadding:insets];
+    BOOL outOfBounds = !MKMapRectContainsPoint(smallerRect, point);
+
+    // Pan the map if the map is not currently being dragged and the point is near the edge
+    MKMapCamera *camera;
+    if(outOfBounds && !dragInProgress) {
+        if(outOfBounds) {
+            // Reset
+            mapWasDragged = NO;
+        }
+        camera = [[MKMapCamera alloc] init];
+        camera.centerCoordinate = location.coordinate;
+        // camera.altitude = [self mapAltitude];
+        camera.altitude = self.mapView.camera.altitude;
+    }
+
+    if(camera != nil) {
+        [self.mapView setCamera:camera animated:YES];
+    }
+
+    [UIView animateWithDuration:1 delay:0 options:UIViewAnimationOptionAllowUserInteraction animations:^{
+        currentLocationAnnotation.coordinate = location.coordinate;
+    } completion:^(BOOL finished) {
+        if(!finished) {
+            currentLocationAnnotation.coordinate = location.coordinate;
+        }
+    }];
+}
+
+- (int)mapAltitude {
+    int altitude;
+    NSString *m = [GLManager sharedManager].currentTripMode;
+    if([m isEqualToString:@"walk"] || [m isEqualToString:@"run"] || [m isEqualToString:@"bicycle"] || [m isEqualToString:@"scooter"]) {
+        altitude = 1000;
+    } else {
+        altitude = 3000;
+    }
+    return altitude;
 }
 
 - (void)refreshView {
@@ -182,7 +281,7 @@ NSArray *intervalMapStrings;
 
     int age = -(int)round([GLManager sharedManager].lastLocation.timestamp.timeIntervalSinceNow);
     if(age == 1) age = 0;
-    self.locationAgeLabel.text = [FirstViewController timeFormatted:age];
+    self.locationAgeLabel.text = [TrackingViewController timeFormatted:age];
     
     NSString *motionTypeString;
     CMMotionActivity *activity = [GLManager sharedManager].lastMotion;
@@ -213,7 +312,7 @@ NSArray *intervalMapStrings;
 
     if([GLManager sharedManager].lastSentDate) {
         age = -(int)round([GLManager sharedManager].lastSentDate.timeIntervalSinceNow);
-        self.queueAgeLabel.text = [NSString stringWithFormat:@"%@", [FirstViewController timeFormatted:age]];
+        self.queueAgeLabel.text = [NSString stringWithFormat:@"%@", [TrackingViewController timeFormatted:age]];
     } else {
         self.queueAgeLabel.text = @"n/a";
     }
@@ -224,13 +323,6 @@ NSArray *intervalMapStrings;
 
     [self updateTripState];
     
-    if([GLManager sharedManager].currentFlightSummary) {
-        self.flightSummary.text = [GLManager sharedManager].currentFlightSummary;
-        self.flightInfoView.hidden = NO;
-    } else {
-        self.flightSummary.text = @"";
-        self.flightInfoView.hidden = YES;
-    }
 }
 
 - (IBAction)sendQueue:(id)sender {
@@ -292,15 +384,19 @@ NSArray *intervalMapStrings;
     }
 }
 
-- (void)updateTripState {
+- (void)updateTripMode {
     self.currentModeImage.image = [UIImage imageNamed:[NSString stringWithFormat:@"%@.png", [GLManager sharedManager].currentTripMode]];
     self.currentModeLabel.text = [GLManager sharedManager].currentTripMode;
+}
+
+- (void)updateTripState {
+    [self updateTripMode];
 
     if([GLManager sharedManager].tripInProgress) {
         [self.tripStartStopButton setTitle:@"Stop" forState:UIControlStateNormal];
         self.tripStartStopButton.backgroundColor = [UIColor colorWithRed:252.f/255.f green:109.f/255.f blue:111.f/255.f alpha:1];
-        self.tripDurationLabel.text = [FirstViewController timeFormatted:[GLManager sharedManager].currentTripDuration];
-        self.tripDurationUnitLabel.text = [FirstViewController timeUnits:[GLManager sharedManager].currentTripDuration];
+        self.tripDurationLabel.text = [TrackingViewController timeFormatted:[GLManager sharedManager].currentTripDuration];
+        self.tripDurationUnitLabel.text = [TrackingViewController timeUnits:[GLManager sharedManager].currentTripDuration];
         double distance = [self metersToDisplayUnits:[GLManager sharedManager].currentTripDistance];
         NSString *format;
         if(distance >= 1000) {
@@ -311,11 +407,19 @@ NSArray *intervalMapStrings;
             format = @"%0.2f";
         }
         self.tripDistanceLabel.text = [NSString stringWithFormat:format, distance];
+        [self updateScreenLockSetting:YES];
     } else {
         [self.tripStartStopButton setTitle:@"Start" forState:UIControlStateNormal];
-        self.tripStartStopButton.backgroundColor = [UIColor colorWithRed:106.f/255.f green:212.f/255.f blue:150.f/255.f alpha:1];
+        self.tripStartStopButton.backgroundColor = [UIColor colorNamed:@"OverlandGreen"];
         self.tripDistanceLabel.text = @" ";
         self.tripDurationLabel.text = @" ";
+        [self updateScreenLockSetting:NO];
+    }
+}
+
+- (void)updateScreenLockSetting:(bool)val {
+    if([[NSUserDefaults standardUserDefaults] boolForKey:GLScreenLockEnabledDefaultsName]) {
+        [UIApplication sharedApplication].idleTimerDisabled = val;
     }
 }
  
@@ -337,7 +441,6 @@ NSArray *intervalMapStrings;
         // Keep track of whether tracking was on or off when this trip started
         [[NSUserDefaults standardUserDefaults] setBool:[GLManager sharedManager].trackingEnabled forKey:GLTripTrackingEnabledDefaultsName];
 
-        [[GLManager sharedManager] startAllUpdates];
         [[GLManager sharedManager] startTrip];
     }
     [self updateTripState];

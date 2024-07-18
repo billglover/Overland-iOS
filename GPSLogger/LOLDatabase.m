@@ -27,7 +27,10 @@
     self = [super init];
     if (!self) return nil;
     
-    int status = sqlite3_open([path UTF8String], &db);
+    // int status = sqlite3_open([path UTF8String], &db);
+    // Open the database in serialized mode
+    // https://www.sqlite.org/threadsafe.html
+    int status = sqlite3_open_v2([path UTF8String], &db, SQLITE_OPEN_READWRITE|SQLITE_OPEN_FULLMUTEX|SQLITE_OPEN_CREATE, NULL);
     
     if (status != SQLITE_OK) {
         NSLog(@"Couldn't open database: %@", path);
@@ -67,6 +70,7 @@
     sqlite3_stmt *removeByKeyStatement;
     sqlite3_stmt *enumerateStatement;
     sqlite3_stmt *countStatement;
+    sqlite3_stmt *deleteAllStatement;
 }
 
 - (id)initWithDatabase:(LOLDatabase *)db collection:(NSString *)collection;
@@ -124,7 +128,14 @@
         NSLog(@"Error with delete query! %s", sqlite3_errmsg(_d->db));
         return nil;
     }
-    
+
+    q = [[NSString alloc] initWithFormat:@"DELETE FROM '%@';", collection];
+    status = sqlite3_prepare_v2(_d->db, [q UTF8String], (int)q.length+1, &deleteAllStatement, NULL);
+    if (status != SQLITE_OK) {
+        NSLog(@"Error with delete all query! %s", sqlite3_errmsg(_d->db));
+        return nil;
+    }
+
     return self;
 }
 
@@ -133,9 +144,10 @@
     sqlite3_finalize(getByKeyStatement);
     sqlite3_finalize(setByKeyStatement);
     sqlite3_finalize(removeByKeyStatement);
+    sqlite3_finalize(deleteAllStatement);
     sqlite3_finalize(enumerateStatement);
     sqlite3_finalize(countStatement);
-    
+
     NSString *q = @"COMMIT TRANSACTION;";
     if (sqlite3_exec(_d->db, [q UTF8String], NULL, NULL, NULL) != SQLITE_OK) {
         NSLog(@"Couldn't end a transaction!");
@@ -203,6 +215,16 @@
     
     sqlite3_reset(removeByKeyStatement);
     
+}
+
+- (void)deleteAllData
+{
+    int status = sqlite3_step(deleteAllStatement);
+    if (status != SQLITE_DONE) {
+        NSLog(@"Error deleting all data : %s", sqlite3_errmsg(_d->db));
+    }
+    
+    sqlite3_reset(deleteAllStatement);
 }
 
 - (void)enumerateKeysAndObjectsUsingBlock:(BOOL(^)(NSString *key, NSDictionary *object))block;

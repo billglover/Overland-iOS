@@ -7,8 +7,9 @@
 //
 
 #import <UIKit/UIKit.h>
+#import <MapKit/MapKit.h>
 
-@interface FirstViewController : UIViewController
+@interface TrackingViewController : UIViewController <MKMapViewDelegate, UIGestureRecognizerDelegate>
 
 @property BOOL usesMetricSystem;
 
@@ -44,8 +45,6 @@
 @property (strong, nonatomic) IBOutlet UIButton *tripStartStopButton;
 - (IBAction)tripStartStopWasTapped:(id)sender;
 
-@property (strong, nonatomic) IBOutlet UIView *flightInfoView;
-@property (strong, nonatomic) IBOutlet UILabel *flightSummary;
+@property (strong, nonatomic) IBOutlet MKMapView *mapView;
 
 @end
-
